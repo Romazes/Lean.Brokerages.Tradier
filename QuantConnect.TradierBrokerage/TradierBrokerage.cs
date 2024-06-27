@@ -1094,32 +1094,50 @@ Interval	Data Available (Open)	Data Available (All)
         /// </summary>
         private void CheckForFills()
         {
+            Log.Trace($"TradierBrokerage.CheckForFills: START", true);
             // reentrance guard
             if (!Monitor.TryEnter(_fillLock))
             {
+                Log.Trace($"TradierBrokerage.CheckForFills: Reentrance Guard", true);
                 return;
             }
 
             try
             {
                 var intradayAndPendingOrders = GetIntradayAndPendingOrders();
+                Log.Trace($"TradierBrokerage.CheckForFills: intradayAndPendingOrders = {intradayAndPendingOrders.Count}", true);
+                if (intradayAndPendingOrders.Count > 0)
+                {
+                    foreach (var intraDay in intradayAndPendingOrders)
+                    {
+                        Log.Trace($"TradierBrokerage.CheckForFills: OrderID:{intraDay.Id}|{intraDay.Type}|{intraDay.Symbol}|{intraDay.Direction}|{intraDay.Quantity}|{intraDay.Status}|Price:{intraDay.Price}|LastFillPrice:{intraDay.LastFillPrice}", true);
+                    }
+                }
+
                 if (intradayAndPendingOrders == null)
                 {
-                    Log.Error("TradierBrokerage.CheckForFills(): Returned null response!");
+                    Log.Error("TradierBrokerage.CheckForFills(): Returned null response!", true);
                     return;
                 }
 
                 var updatedOrders = intradayAndPendingOrders.ToDictionary(x => x.Id);
+                Log.Trace($"TradierBrokerage.CheckForFills: updatedOrders = {updatedOrders.Count}", true);
 
                 // loop over our cache of orders looking for changes in status for fill quantities
+                Log.Trace($"TradierBrokerage.CheckForFills: BEFORE LOOP OVER CACHE OF ORDERS", true);
                 foreach (var cachedOrder in _cachedOpenOrdersByTradierOrderID)
                 {
-                    TradierOrder updatedOrder;
-                    var hasUpdatedOrder = updatedOrders.TryGetValue(cachedOrder.Key, out updatedOrder);
+                    Log.Trace($"TradierBrokerage.CheckForFills.InLoop: CacheOrderID = {cachedOrder.Key}", true);
+                    var hasUpdatedOrder = updatedOrders.TryGetValue(cachedOrder.Key, out var updatedOrder);
+                    Log.Trace($"TradierBrokerage.CheckForFills.InLoop: hasUpdatedOrder = {hasUpdatedOrder}", true);
                     if (hasUpdatedOrder)
                     {
+                        Log.Trace($"TradierBrokerage.CheckForFills.InLoop.hasUpdatedOrder: BEFORE ProcessPotentiallyUpdatedOrder", true);
+                        Log.Trace($"TradierBrokerage.CheckForFills.InLoop.hasUpdatedOrder.ProcessPotentiallyUpdatedOrder: cachedOrder.Value.Order.Id:{cachedOrder.Value.Order.Id}", true);
+                        Log.Trace($"TradierBrokerage.CheckForFills.InLoop.hasUpdatedOrder.ProcessPotentiallyUpdatedOrder: updatedOrder.Id:{updatedOrder.Id}", true);
                         // determine if the order has been updated and produce fills accordingly
                         ProcessPotentiallyUpdatedOrder(cachedOrder.Value, updatedOrder);
+                        Log.Trace($"TradierBrokerage.CheckForFills.InLoop.hasUpdatedOrder: AFTER ProcessPotentiallyUpdatedOrder", true);
 
                         // if the order is still open, update the cached value
                         if (!OrderIsClosed(updatedOrder)) UpdateCachedOpenOrder(cachedOrder.Key, updatedOrder);
@@ -1139,15 +1157,18 @@ Interval	Data Available (Open)	Data Available (All)
                     {
                         try
                         {
+                            Log.Trace($"TradierBrokerage.CheckForFills.InLoop.Task.Run: cachedOrderLocal = {cachedOrderLocal.Key}", true);
                             var updatedOrderLocal = GetOrder(cachedOrderLocal.Key);
                             if (updatedOrderLocal == null)
                             {
-                                Log.Error($"TradierBrokerage.CheckForFills(): Unable to locate order {cachedOrderLocal.Key} in cached open orders.");
+                                Log.Error($"TradierBrokerage.CheckForFills(): Unable to locate order {cachedOrderLocal.Key} in cached open orders.", true);
                                 throw new InvalidOperationException("TradierBrokerage.CheckForFills(): GetOrder() return null response");
                             }
 
                             UpdateCachedOpenOrder(cachedOrderLocal.Key, updatedOrderLocal);
+                            Log.Trace($"TradierBrokerage.CheckForFills.InLoop.Task.Run: BEFORE ProcessPotentiallyUpdatedOrder", true);
                             ProcessPotentiallyUpdatedOrder(cachedOrderLocal.Value, updatedOrderLocal);
+                            Log.Trace($"TradierBrokerage.CheckForFills.InLoop.Task.Run: AFTER ProcessPotentiallyUpdatedOrder", true);
                         }
                         catch (Exception err)
                         {
@@ -1162,6 +1183,7 @@ Interval	Data Available (Open)	Data Available (All)
                         }
                     });
                 }
+                Log.Trace($"TradierBrokerage.CheckForFills: AFTER LOOP OVER CACHE OF ORDERS", true);
 
                 // if we get order updates for orders we're unaware of we need to bail, this can corrupt the algorithm state
                 var unknownOrderIDs = updatedOrders.Where(IsUnknownOrderID).ToHashSet(x => x.Key);
@@ -1174,6 +1196,7 @@ Interval	Data Available (Open)	Data Available (All)
 
                 if (fireTask)
                 {
+                    Log.Trace($"TradierBrokerage.CheckForFills.fireTask: TRUE", true);
                     // wait a second and then check the order provider to see if we have these broker IDs, maybe they came in later (ex, symbol denied for short trading)
                     Task.Delay(TimeSpan.FromSeconds(2)).ContinueWith(t =>
                     {
@@ -1182,7 +1205,7 @@ Interval	Data Available (Open)	Data Available (All)
                         try
                         {
                             // verify we don't have them in the order provider
-                            Log.Trace("TradierBrokerage.CheckForFills(): Verifying missing brokerage IDs: " + string.Join(",", localUnknownTradierOrderIDs));
+                            Log.Trace("TradierBrokerage.CheckForFills(): Verifying missing brokerage IDs: " + string.Join(",", localUnknownTradierOrderIDs), true);
                             var orders = localUnknownTradierOrderIDs.Select(x => _orderProvider.GetOrdersByBrokerageId(x)?.SingleOrDefault()).Where(x => x != null);
                             var stillUnknownOrderIDs = localUnknownTradierOrderIDs.Where(x => !orders.Any(y => y.BrokerId.Contains(x.ToStringInvariant()))).ToList();
                             if (stillUnknownOrderIDs.Count > 0)
@@ -1198,7 +1221,7 @@ Interval	Data Available (Open)	Data Available (All)
                                 {
                                     // if we still have unknown IDs then we've gotta bail on the algorithm
                                     var ids = string.Join(", ", stillUnknownOrderIDs);
-                                    Log.Error("TradierBrokerage.CheckForFills(): Unable to verify all missing brokerage IDs: " + ids);
+                                    Log.Error("TradierBrokerage.CheckForFills(): Unable to verify all missing brokerage IDs: " + ids, true);
                                     OnMessage(new BrokerageMessageEvent(BrokerageMessageType.Error, "UnknownOrderId", "Received unknown Tradier order id(s): " + ids));
                                     return;
                                 }
@@ -1208,7 +1231,7 @@ Interval	Data Available (Open)	Data Available (All)
                                 // add these to the verified list so we don't check them again
                                 _verifiedUnknownTradierOrderIDs.Add(unknownTradierOrderID);
                             }
-                            Log.Trace("TradierBrokerage.CheckForFills(): Verified all missing brokerage IDs.");
+                            Log.Trace("TradierBrokerage.CheckForFills(): Verified all missing brokerage IDs.", true);
                         }
                         catch (Exception err)
                         {
@@ -1228,8 +1251,10 @@ Interval	Data Available (Open)	Data Available (All)
             }
             finally
             {
+                Log.Trace($"TradierBrokerage.CheckForFills: FINALLY, Clean Monitor.Exit", true);
                 Monitor.Exit(_fillLock);
             }
+            Log.Trace($"TradierBrokerage.CheckForFills: END", true);
         }
 
         private bool IsUnknownOrderID(KeyValuePair<long, TradierOrder> x)
@@ -1244,14 +1269,23 @@ Interval	Data Available (Open)	Data Available (All)
 
         private void ProcessPotentiallyUpdatedOrder(TradierCachedOpenOrder cachedOrder, TradierOrder updatedOrder)
         {
+            Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder: updatedOrder.RemainingQuantity = {updatedOrder.RemainingQuantity}", true);
+            Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder: cachedOrder.Order.RemainingQuantity = {cachedOrder.Order.RemainingQuantity}", true);
+            Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder: updatedOrder.RemainingQuantity != cachedOrder.Order.RemainingQuantity ? {updatedOrder.RemainingQuantity != cachedOrder.Order.RemainingQuantity}", true);
+            Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder: ConvertStatus(updatedOrder.Status) = {ConvertStatus(updatedOrder.Status)}", true);
+            Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder: ConvertStatus(cachedOrder.Order.Status) = {ConvertStatus(cachedOrder.Order.Status)}", true);
+            Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder: ConvertStatus(updatedOrder.Status) != ConvertStatus(cachedOrder.Order.Status) ? {ConvertStatus(updatedOrder.Status) != ConvertStatus(cachedOrder.Order.Status)}", true);
+
             // check for fills or status changes, for either fire a fill event
             if (updatedOrder.RemainingQuantity != cachedOrder.Order.RemainingQuantity
              || ConvertStatus(updatedOrder.Status) != ConvertStatus(cachedOrder.Order.Status))
             {
                 var leanOrderStatus = ConvertStatus(updatedOrder.Status);
+                Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder.IF: leanOrderStatus = {leanOrderStatus}", true);
                 // get original QC order by brokerage id
                 if (!TryGetOrRemoveCrossZeroOrder(updatedOrder.Id.ToStringInvariant(), leanOrderStatus, out var qcOrder))
                 {
+                    Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder.IF.TryGetOrRemoveCrossZeroOrder: Try get order through lean provider", true);
                     qcOrder = _orderProvider.GetOrdersByBrokerageId(updatedOrder.Id)?.SingleOrDefault();
                 }
 
@@ -1260,6 +1294,9 @@ Interval	Data Available (Open)	Data Available (All)
                     throw new Exception($"Lean order not found for brokerage id: {updatedOrder.Id}");
                 }
 
+                Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder.IF.updatedOrder.LastFillPrice = {updatedOrder.LastFillPrice}", true);
+                Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder.IF.updatedOrder.QuantityExecuted = {updatedOrder.QuantityExecuted}", true);
+                Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder.IF.cachedOrder.Order.QuantityExecuted = {cachedOrder.Order.QuantityExecuted}", true);
                 var orderFee = OrderFee.Zero;
                 var fill = new OrderEvent(qcOrder, DateTime.UtcNow, orderFee, "Tradier Fill Event")
                 {
@@ -1271,6 +1308,12 @@ Interval	Data Available (Open)	Data Available (All)
                     FillPrice = updatedOrder.LastFillPrice,
                     FillQuantity = (int)(updatedOrder.QuantityExecuted - cachedOrder.Order.QuantityExecuted)
                 };
+
+                Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder.IF.fill.Status = {fill.Status}", true);
+                Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder.IF.fill.FillPrice = {fill.FillPrice}", true);
+                Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder.IF.fill.FillQuantity = {fill.FillQuantity}", true);
+                Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder.IF.updatedOrder.Direction = {updatedOrder.Direction}", true);
+                Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder.IF.IsShort(updatedOrder.Direction) = {IsShort(updatedOrder.Direction)}", true);
 
                 // flip the quantity on sell actions
                 if (IsShort(updatedOrder.Direction))
@@ -1286,11 +1329,15 @@ Interval	Data Available (Open)	Data Available (All)
                         new OrderFeeParameters(security, qcOrder));
                 }
 
+                Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder.IF.BEFORE_TryHandleRemainingCrossZeroOrder.qcOrder: {qcOrder}", true);
+                Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder.IF.BEFORE_TryHandleRemainingCrossZeroOrder.fill: {fill}", true);
                 // if we filled the order and have another contingent order waiting, submit it
                 if (!TryHandleRemainingCrossZeroOrder(qcOrder, fill))
                 {
+                    Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder.IF.IN_TryHandleRemainingCrossZeroOrder: It call simple order event", true);
                     OnOrderEvent(fill);
                 }
+                Log.Trace($"TradierBrokerage.ProcessPotentiallyUpdatedOrder.IF.AFTER_TryHandleRemainingCrossZeroOrder", true);
             }
 
             // remove from open orders since it's now closed
